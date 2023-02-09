@@ -5,6 +5,7 @@ import logging
 
 from .damage_calculator import type_effectiveness_modifier
 from .special_effects.abilities.on_switch_in import ability_on_switch_in
+from .special_effects.items.on_switch_in import item_on_switch_in
 from .special_effects.items.end_of_turn import item_end_of_turn
 from .special_effects.abilities.end_of_turn import ability_end_of_turn
 from .special_effects.moves.after_move import after_move
@@ -14,8 +15,8 @@ logger = logging.getLogger(__name__)
 
 
 opposite_side = {
-    constants.SELF: constants.OPPONENT,
-    constants.OPPONENT: constants.SELF
+    constants.USER: constants.OPPONENT,
+    constants.OPPONENT: constants.USER
 }
 
 
@@ -52,6 +53,9 @@ accuracy_multiplier_lookup = {
 }
 
 
+
+
+
 def get_instructions_from_move_special_effect(mutator, attacking_side, attacking_pokemon, defending_pokemon, move_name, instructions):
     if instructions.frozen:
         return [instructions]
@@ -62,7 +66,7 @@ def get_instructions_from_move_special_effect(mutator, attacking_side, attacking
         new_instructions = list()
     else:
         mutator.apply(instructions.instructions)
-        new_instructions = special_logic_move_function(mutator, attacking_side, attacking_pokemon, defending_pokemon)
+        new_instructions = special_logic_move_function(mutator, attacking_side, get_side_from_state(mutator.state, attacking_side), attacking_pokemon, defending_pokemon)
         new_instructions = new_instructions or list()
         mutator.reverse(instructions.instructions)
 
@@ -72,7 +76,7 @@ def get_instructions_from_move_special_effect(mutator, attacking_side, attacking
     return [instructions]
 
 
-def get_state_from_volatile_status(mutator, volatile_status, attacker, affected_side, first_move, instruction):
+def get_instructions_from_volatile_statuses(mutator, volatile_status, attacker, affected_side, first_move, instruction):
     if instruction.frozen or not volatile_status:
         return [instruction]
 
@@ -235,12 +239,26 @@ def get_instructions_from_switch(mutator, attacker, switch_pokemon_name, instruc
             mutator.apply_one(i)
             instruction_additions.append(i)
 
+    # account for switch-in items
+    item_switch_in_instructions = item_on_switch_in(
+        switch_pkmn.item,
+        mutator.state,
+        attacker,
+        attacking_side.active,
+        opposite_side[attacker],
+        defending_side.active
+    )
+    if item_switch_in_instructions is not None:
+        for i in item_switch_in_instructions:
+            mutator.apply_one(i)
+            instruction_additions.append(i)
+
     mutator.reverse(instruction_additions)
     mutator.reverse(instructions.instructions)
     for i in instruction_additions:
         instructions.add_instruction(i)
 
-    return [instructions]
+    return instructions
 
 
 def get_instructions_from_flinched(mutator, attacker, instruction):
@@ -317,7 +335,7 @@ def get_instructions_from_statuses_that_freeze_the_state(mutator, attacker, defe
     return instructions
 
 
-def get_states_from_damage(mutator, defender, damage, accuracy, attacking_move, instruction):
+def get_instructions_from_damage(mutator, defender, damage, accuracy, attacking_move, instruction):
     attacker = opposite_side[defender]
     attacker_side = get_side_from_state(mutator.state, attacker)
     damage_side = get_side_from_state(mutator.state, defender)
@@ -334,7 +352,7 @@ def get_states_from_damage(mutator, defender, damage, accuracy, attacking_move, 
 
     mutator.apply(instruction.instructions)
 
-    if accuracy is True:
+    if accuracy is True or "glaiverush" in damage_side.active.volatile_status:
         accuracy = 100
     else:
         accuracy = min(100, accuracy * accuracy_multiplier_lookup[attacker_side.active.accuracy_boost] / accuracy_multiplier_lookup[damage_side.active.evasion_boost])
@@ -393,6 +411,19 @@ def get_states_from_damage(mutator, defender, damage, accuracy, attacking_move, 
                     actual_damage
                 )
             )
+
+            if attacker_side.active.ability == "beastboost" and actual_damage == damage_side.active.hp:
+                highest_stat = attacker_side.active.get_highest_stat()
+                if attacker_side.active.get_boost_from_boost_string(highest_stat) < 6:
+                    instruction_additions.append(
+                        (
+                            constants.MUTATOR_BOOST,
+                            attacker,
+                            highest_stat,
+                            1
+                        )
+                    )
+
         instruction.update_percentage(percent_hit)
 
         if damage_side.active.hp <= 0:
@@ -485,7 +516,7 @@ def get_instructions_from_defenders_ability_after_move(mutator, move, ability_na
         and constants.CONTACT in move[constants.FLAGS]
         and attacking_pokemon.item != "protectivepads"
     ):
-        return get_states_from_status_effects(
+        return get_instructions_from_status_effects(
             mutator,
             attacker_string,
             constants.PARALYZED,
@@ -497,7 +528,7 @@ def get_instructions_from_defenders_ability_after_move(mutator, move, ability_na
         and constants.CONTACT in move[constants.FLAGS]
         and attacking_pokemon.item != "protectivepads"
     ):
-        return get_states_from_status_effects(
+        return get_instructions_from_status_effects(
             mutator,
             attacker_string,
             constants.BURN,
@@ -543,7 +574,7 @@ def get_instructions_from_side_conditions(mutator, attacker_string, side_string,
         elif condition == constants.TOXIC_SPIKES:
             max_layers = 2
         elif condition == constants.AURORA_VEIL:
-            max_layers = 1 if mutator.state.weather == constants.HAIL else 0
+            max_layers = 1 if mutator.state.weather in constants.HAIL_OR_SNOW else 0
         else:
             max_layers = 1
 
@@ -609,10 +640,10 @@ def get_instructions_from_hazard_clearing_moves(mutator, attacker_string, move, 
                 )
 
     # ghost-type misses are dealt with by freezing the state. i.e. this elif will not be reached if the move missed
-    elif move[constants.ID] == 'rapidspin':
+    elif move[constants.ID] == "rapidspin" or move[constants.ID] == "mortalspin" or move[constants.ID] == "tidyup":
         side = get_side_from_state(mutator.state, attacker_string)
         for side_condition, amount in side.side_conditions.items():
-            if amount > 0 and side_condition in constants.RAPID_SPIN_CLEARS:
+            if amount > 0 and side_condition in constants.SPIN_TIDYUP_CLEARS:
                 instruction_additions.append(
                     (
                         constants.MUTATOR_SIDE_END,
@@ -623,7 +654,7 @@ def get_instructions_from_hazard_clearing_moves(mutator, attacker_string, move, 
                 )
     elif move[constants.ID] == constants.COURT_CHANGE:
         sides = [
-            (constants.SELF, mutator.state.self),
+            (constants.USER, mutator.state.user),
             (constants.OPPONENT, mutator.state.opponent)
         ]
         for side_name, side_object in sides:
@@ -656,7 +687,7 @@ def get_instructions_from_hazard_clearing_moves(mutator, attacker_string, move, 
     return [instruction]
 
 
-def get_states_from_status_effects(mutator, defender, status, accuracy, instruction):
+def get_instructions_from_status_effects(mutator, defender, status, accuracy, instruction):
     """Returns the possible states from status effects"""
     if instruction.frozen or status is None:
         return [instruction]
@@ -714,7 +745,7 @@ def get_states_from_status_effects(mutator, defender, status, accuracy, instruct
     return instructions
 
 
-def get_states_from_boosts(mutator, side_string, boosts, accuracy, instruction):
+def get_instructions_from_boosts(mutator, side_string, boosts, accuracy, instruction):
     if instruction.frozen or not boosts:
         return [instruction]
 
@@ -732,15 +763,12 @@ def get_states_from_boosts(mutator, side_string, boosts, accuracy, instruction):
 
     mutator.apply(instruction.instructions)
     side = get_side_from_state(mutator.state, side_string)
-    if side.active.ability in constants.IMMUNE_TO_STAT_LOWERING_ABILITIES:
-        mutator.reverse(instruction.instructions)
-        return [instruction]
 
     instruction_additions = []
     move_missed_instruction = copy(instruction)
     if percent_hit > 0:
         for k, v in boosts.items():
-            pkmn_boost = get_boost_from_boost_string(side, k)
+            pkmn_boost = side.active.get_boost_from_boost_string(k)
             if v > 0:
                 new_boost = pkmn_boost + v
                 if new_boost > constants.MAX_BOOSTS:
@@ -751,7 +779,11 @@ def get_states_from_boosts(mutator, side_string, boosts, accuracy, instruction):
                     k,
                     new_boost - pkmn_boost
                 )
-            else:
+                instruction_additions.append(boost_instruction)
+            elif (
+                side.active.ability not in constants.IMMUNE_TO_STAT_LOWERING_ABILITIES and
+                side.active.item not in constants.IMMUNE_TO_STAT_LOWERING_ITEMS
+            ):
                 new_boost = pkmn_boost + v
                 if new_boost < -1 * constants.MAX_BOOSTS:
                     new_boost = -1 * constants.MAX_BOOSTS
@@ -761,7 +793,7 @@ def get_states_from_boosts(mutator, side_string, boosts, accuracy, instruction):
                     k,
                     new_boost - pkmn_boost
                 )
-            instruction_additions.append(boost_instruction)
+                instruction_additions.append(boost_instruction)
 
         instruction.update_percentage(percent_hit)
         instructions.append(instruction)
@@ -777,7 +809,7 @@ def get_states_from_boosts(mutator, side_string, boosts, accuracy, instruction):
     return instructions
 
 
-def get_states_from_flinching_moves(defender, accuracy, first_move, instruction):
+def get_instructions_from_flinching_moves(defender, accuracy, first_move, instruction):
     if instruction.frozen or not first_move:
         return [instruction]
 
@@ -807,7 +839,7 @@ def get_states_from_flinching_moves(defender, accuracy, first_move, instruction)
     return instructions
 
 
-def get_state_from_attacker_recovery(mutator, attacker_string, move, instruction):
+def get_instructions_from_attacker_recovery(mutator, attacker_string, move, instruction):
     if instruction.frozen:
         return [instruction]
 
@@ -852,9 +884,9 @@ def get_state_from_attacker_recovery(mutator, attacker_string, move, instruction
 def get_end_of_turn_instructions(mutator, instruction, bot_move, opponent_move, bot_moves_first):
     # determine which goes first
     if bot_moves_first:
-        sides = [constants.SELF, constants.OPPONENT]
+        sides = [constants.USER, constants.OPPONENT]
     else:
-        sides = [constants.OPPONENT, constants.SELF]
+        sides = [constants.OPPONENT, constants.USER]
 
     mutator.apply(instruction.instructions)
 
@@ -883,6 +915,32 @@ def get_end_of_turn_instructions(mutator, instruction, bot_move, opponent_move, 
             )
             mutator.apply_one(ice_damage_instruction)
             instruction.add_instruction(ice_damage_instruction)
+
+    # futuresight
+    for attacker in sides:
+        side = get_side_from_state(mutator.state, attacker)
+        if side.future_sight[0] == 1:
+            from showdown.engine.damage_calculator import calculate_futuresight_damage
+            damage_dealt = calculate_futuresight_damage(
+                mutator.state,
+                attacker,
+                side.future_sight[1]
+            )[0]
+            if damage_dealt:
+                futuresight_damage_instruction = (
+                    constants.MUTATOR_DAMAGE,
+                    opposite_side[attacker],
+                    damage_dealt
+                )
+                mutator.apply_one(futuresight_damage_instruction)
+                instruction.add_instruction(futuresight_damage_instruction)
+        if side.future_sight[0] > 0:
+            futuresight_decrement_instruction = (
+                constants.MUTATOR_FUTURESIGHT_DECREMENT,
+                attacker,
+            )
+            mutator.apply_one(futuresight_decrement_instruction)
+            instruction.add_instruction(futuresight_decrement_instruction)
 
     # wish
     for attacker in sides:
@@ -1014,6 +1072,8 @@ def get_end_of_turn_instructions(mutator, instruction, bot_move, opponent_move, 
                 volatile_status_to_remove = constants.BANEFUL_BUNKER
             elif constants.SPIKY_SHIELD in pkmn.volatile_status:
                 volatile_status_to_remove = constants.SPIKY_SHIELD
+            elif constants.SILK_TRAP in pkmn.volatile_status:
+                volatile_status_to_remove = constants.SILK_TRAP
             else:
                 # should never happen
                 raise Exception("Pokemon has volatile status that is not caught here: {}".format(pkmn.volatile_status))
@@ -1063,12 +1123,23 @@ def get_end_of_turn_instructions(mutator, instruction, bot_move, opponent_move, 
             mutator.apply_one(partially_trapped_damage_instruction)
             instruction.add_instruction(partially_trapped_damage_instruction)
 
+        if "saltcure" in pkmn.volatile_status:
+            divisor = 4 if any(t in pkmn.types for t in ["water", "steel"]) else 8
+            damage_taken = max(0, int(min(pkmn.maxhp * (1/divisor), pkmn.hp)))
+            partially_trapped_damage_instruction = (
+                constants.MUTATOR_DAMAGE,
+                attacker,
+                damage_taken
+            )
+            mutator.apply_one(partially_trapped_damage_instruction)
+            instruction.add_instruction(partially_trapped_damage_instruction)
+
     # disable not used moves if choice-item is held
     for attacker in sides:
         side = get_side_from_state(mutator.state, attacker)
         pkmn = side.active
 
-        if attacker == constants.SELF:
+        if attacker == constants.USER:
             move = bot_move
             other_move = opponent_move
         else:
@@ -1101,7 +1172,7 @@ def get_end_of_turn_instructions(mutator, instruction, bot_move, opponent_move, 
     return [instruction]
 
 
-def get_state_from_drag(mutator, attacking_side_string, move_target, instruction):
+def get_instructions_from_drag(mutator, attacking_side_string, move_target, instruction):
     if instruction.frozen:
         return [instruction]
 
@@ -1124,7 +1195,7 @@ def get_state_from_drag(mutator, attacking_side_string, move_target, instruction
         return [instruction]
 
     for pkmn_name in alive_reserves:
-        new_instruction = get_instructions_from_switch(mutator, affected_side_string, pkmn_name, copy(instruction))[0]
+        new_instruction = get_instructions_from_switch(mutator, affected_side_string, pkmn_name, copy(instruction))
         new_instruction.update_percentage(1 / num_reserve_alive)
         new_instructions.append(new_instruction)
 
@@ -1216,30 +1287,12 @@ def remove_volatile_status_and_boosts_instructions(side, side_string):
 
 
 def get_side_from_state(state, side_string):
-    if side_string == constants.SELF:
-        return state.self
+    if side_string == constants.USER:
+        return state.user
     elif side_string == constants.OPPONENT:
         return state.opponent
     else:
         raise ValueError("Invalid value for `side`")
-
-
-def get_boost_from_boost_string(side, boost_string):
-    if boost_string == constants.ATTACK:
-        return side.active.attack_boost
-    elif boost_string == constants.DEFENSE:
-        return side.active.defense_boost
-    elif boost_string == constants.SPECIAL_ATTACK:
-        return side.active.special_attack_boost
-    elif boost_string == constants.SPECIAL_DEFENSE:
-        return side.active.special_defense_boost
-    elif boost_string == constants.SPEED:
-        return side.active.speed_boost
-    elif boost_string == constants.ACCURACY:
-        return side.active.accuracy_boost
-    elif boost_string == constants.EVASION:
-        return side.active.evasion_boost
-    raise ValueError("{} is not a valid boost".format(boost_string))
 
 
 def can_be_volatile_statused(side, volatile_status, first_move):
@@ -1259,7 +1312,11 @@ def can_be_volatile_statused(side, volatile_status, first_move):
 
 
 def sleep_clause_activated(side, status):
-    return status == constants.SLEEP and constants.SLEEP in [p.status for p in side.reserve.values()]
+    if status == constants.SLEEP:
+        for p in side.reserve.values():
+            if p.status == constants.SLEEP and p.hp > 0:
+                return True
+    return False
 
 
 def immune_to_status(state, defending_pkmn, attacking_pkmn, status):
@@ -1273,6 +1330,10 @@ def immune_to_status(state, defending_pkmn, attacking_pkmn, status):
     if defending_pkmn.ability == 'comatose':
         return True
     if state.field == constants.MISTY_TERRAIN and defending_pkmn.is_grounded():
+        return True
+    if defending_pkmn.ability == "purifyingsalt":
+        return True
+    if defending_pkmn.ability == "thermalexchange" and status == constants.BURN:
         return True
 
     # Specific status immunity

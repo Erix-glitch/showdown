@@ -1,5 +1,8 @@
 import os
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 PWD = os.path.dirname(os.path.abspath(__file__))
 
@@ -17,3 +20,5 @@ with open(random_battle_set_location, 'r') as f:
 
 
 pokemon_sets = random_battle_sets
+effectiveness = {}
+team_datasets = None

@@ -8,7 +8,7 @@ import logging
 import data
 from data.helpers import get_standard_battle_sets
 import constants
-import config
+from config import ShowdownConfig
 from showdown.engine.evaluate import Scoring
 from showdown.battle import Pokemon
 from showdown.battle import LastUsedMove
@@ -20,7 +20,11 @@ logger = logging.getLogger(__name__)
 
 
 def battle_is_finished(battle_tag, msg):
-    return msg.startswith(">{}".format(battle_tag)) and constants.WIN_STRING in msg and constants.CHAT_STRING not in msg
+    return (
+        msg.startswith(">{}".format(battle_tag)) and
+        (constants.WIN_STRING in msg or constants.TIE_STRING in msg) and
+        constants.CHAT_STRING not in msg
+    )
 
 
 async def async_pick_move(battle):
@@ -53,7 +57,6 @@ async def handle_team_preview(battle, ps_websocket_client):
 
     team_list_indexes.remove(choice_digit)
     message = ["/team {}{}|{}".format(choice_digit, "".join(str(x) for x in team_list_indexes), battle.rqid)]
-    battle.user.active = battle.user.reserve.pop(choice_digit - 1)
 
     await ps_websocket_client.send_message(battle.battle_tag, message)
 
@@ -71,7 +74,7 @@ async def get_battle_tag_and_opponent(ps_websocket_client: PSWebsocketClient):
 
 
 async def initialize_battle_with_tag(ps_websocket_client: PSWebsocketClient, set_request_json=True):
-    battle_module = importlib.import_module('showdown.battle_bots.{}.main'.format(config.battle_bot_module))
+    battle_module = importlib.import_module('showdown.battle_bots.{}.main'.format(ShowdownConfig.battle_bot_module))
 
     battle_tag, opponent_name = await get_battle_tag_and_opponent(ps_websocket_client)
     while True:
@@ -145,13 +148,16 @@ async def start_standard_battle(ps_websocket_client: PSWebsocketClient, pokemon_
             if split_line[1] == constants.TEAM_PREVIEW_POKE and split_line[2].strip() == opponent_id:
                 opponent_pokemon.append(split_line[3])
 
-        battle.initialize_team_preview(user_json, opponent_pokemon)
+        battle.initialize_team_preview(user_json, opponent_pokemon, pokemon_battle_type)
+        battle.during_team_preview()
 
         smogon_usage_data = get_standard_battle_sets(
             pokemon_battle_type,
-            pokemon_names=[p.name for p in battle.opponent.reserve]
+            pokemon_names=set(p.name for p in battle.opponent.reserve + battle.user.reserve)
         )
         data.pokemon_sets = smogon_usage_data
+        for pkmn, values in smogon_usage_data.items():
+            data.effectiveness[pkmn] = values["effectiveness"]
 
         await handle_team_preview(battle, ps_websocket_client)
 
@@ -165,7 +171,7 @@ async def start_battle(ps_websocket_client, pokemon_battle_type):
     else:
         battle = await start_standard_battle(ps_websocket_client, pokemon_battle_type)
 
-    await ps_websocket_client.send_message(battle.battle_tag, [config.greeting_message])
+    await ps_websocket_client.send_message(battle.battle_tag, ["hf"])
     await ps_websocket_client.send_message(battle.battle_tag, ['/timer on'])
 
     return battle
@@ -176,10 +182,13 @@ async def pokemon_battle(ps_websocket_client, pokemon_battle_type):
     while True:
         msg = await ps_websocket_client.receive_message()
         if battle_is_finished(battle.battle_tag, msg):
-            winner = msg.split(constants.WIN_STRING)[-1].split('\n')[0].strip()
+            if constants.WIN_STRING in msg:
+                winner = msg.split(constants.WIN_STRING)[-1].split('\n')[0].strip()
+            else:
+                winner = None
             logger.debug("Winner: {}".format(winner))
-            await ps_websocket_client.send_message(battle.battle_tag, [config.battle_ending_message])
-            await ps_websocket_client.leave_battle(battle.battle_tag, save_replay=config.save_replay)
+            await ps_websocket_client.send_message(battle.battle_tag, ["gg"])
+            await ps_websocket_client.leave_battle(battle.battle_tag, save_replay=ShowdownConfig.save_replay)
             return winner
         else:
             action_required = await async_update_battle(battle, msg)

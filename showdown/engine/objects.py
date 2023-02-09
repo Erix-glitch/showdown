@@ -23,35 +23,43 @@ boost_multiplier_lookup = {
 
 
 class State(object):
-    __slots__ = ('self', 'opponent', 'weather', 'field', 'trick_room')
+    __slots__ = ('user', 'opponent', 'weather', 'field', 'trick_room')
 
     def __init__(self, user, opponent, weather, field, trick_room):
-        self.self = user
+        self.user = user
         self.opponent = opponent
         self.weather = weather
         self.field = field
         self.trick_room = trick_room
 
     def get_self_options(self, force_switch):
+        forced_move = self.user.active.forced_move()
+        if forced_move:
+            return [forced_move]
+
         if force_switch:
             possible_moves = []
         else:
-            possible_moves = [m[constants.ID] for m in self.self.active.moves if not m[constants.DISABLED]]
+            possible_moves = [m[constants.ID] for m in self.user.active.moves if not m[constants.DISABLED]]
 
-        if self.self.trapped(self.opponent.active):
+        if self.user.trapped(self.opponent.active):
             possible_switches = []
         else:
-            possible_switches = self.self.get_switches()
+            possible_switches = self.user.get_switches()
 
         return possible_moves + possible_switches
 
     def get_opponent_options(self):
+        forced_move = self.opponent.active.forced_move()
+        if forced_move:
+            return [forced_move]
+
         if self.opponent.active.hp <= 0:
             possible_moves = []
         else:
             possible_moves = [m[constants.ID] for m in self.opponent.active.moves if not m[constants.DISABLED]]
 
-        if self.opponent.trapped(self.self.active):
+        if self.opponent.trapped(self.user.active):
             possible_switches = []
         else:
             possible_switches = self.opponent.get_switches()
@@ -59,7 +67,7 @@ class State(object):
         return possible_moves + possible_switches
 
     def get_all_options(self):
-        force_switch = self.self.active.hp <= 0
+        force_switch = self.user.active.hp <= 0
         wait = self.opponent.active.hp <= 0
 
         # double faint or team preview
@@ -92,7 +100,7 @@ class State(object):
         #   -1 if the opponent has won
         #    False if the battle is not over
 
-        if self.self.active.hp <= 0 and not any(pkmn.hp for pkmn in self.self.reserve.values()):
+        if self.user.active.hp <= 0 and not any(pkmn.hp for pkmn in self.user.reserve.values()):
             return -1
         elif self.opponent.active.hp <= 0 and not any(pkmn.hp for pkmn in self.opponent.reserve.values()) and len(self.opponent.reserve) == 5:
             return 1
@@ -102,7 +110,7 @@ class State(object):
     @classmethod
     def from_dict(cls, state_dict):
         return State(
-            Side.from_dict(state_dict[constants.SELF]),
+            Side.from_dict(state_dict[constants.USER]),
             Side.from_dict(state_dict[constants.OPPONENT]),
             state_dict[constants.WEATHER],
             state_dict[constants.FIELD],
@@ -112,7 +120,7 @@ class State(object):
     def __repr__(self):
         return str(
             {
-                constants.SELF: self.self,
+                constants.USER: self.user,
                 constants.OPPONENT: self.opponent,
                 constants.WEATHER: self.weather,
                 constants.FIELD: self.field,
@@ -122,13 +130,14 @@ class State(object):
 
 
 class Side(object):
-    __slots__ = ('active', 'reserve', 'wish', 'side_conditions')
+    __slots__ = ('active', 'reserve', 'wish', 'side_conditions', 'future_sight')
 
-    def __init__(self, active, reserve, wish, side_conditions):
+    def __init__(self, active, reserve, wish, side_conditions, future_sight):
         self.active = active
         self.reserve = reserve
         self.wish = wish
         self.side_conditions = side_conditions
+        self.future_sight = future_sight
 
     def get_switches(self):
         switches = []
@@ -157,7 +166,8 @@ class Side(object):
             Pokemon.from_dict(side_dict[constants.ACTIVE]),
             {p[constants.ID]: Pokemon.from_dict(p) for p in side_dict[constants.RESERVE].values()},
             side_dict[constants.WISH],
-            defaultdict(int, side_dict[constants.SIDE_CONDITIONS])
+            defaultdict(int, side_dict[constants.SIDE_CONDITIONS]),
+            side_dict[constants.FUTURE_SIGHT]
         )
 
     def __repr__(self):
@@ -165,7 +175,8 @@ class Side(object):
             constants.ACTIVE: self.active,
             constants.RESERVE: self.reserve,
             constants.WISH: self.wish,
-            constants.SIDE_CONDITIONS: dict(self.side_conditions)
+            constants.SIDE_CONDITIONS: dict(self.side_conditions),
+            constants.FUTURE_SIGHT: self.future_sight
         })
 
 
@@ -195,34 +206,38 @@ class Pokemon(object):
         'status',
         'volatile_status',
         'moves',
+        'terastallized',
         'burn_multiplier'
     )
 
-    def __init__(self,
-                 identifier,
-                 level,
-                 types,
-                 hp,
-                 maxhp,
-                 ability,
-                 item,
-                 attack,
-                 defense,
-                 special_attack,
-                 special_defense,
-                 speed,
-                 nature="serious",
-                 evs=(85,) * 6,
-                 attack_boost=0,
-                 defense_boost=0,
-                 special_attack_boost=0,
-                 special_defense_boost=0,
-                 speed_boost=0,
-                 accuracy_boost=0,
-                 evasion_boost=0,
-                 status=None,
-                 volatile_status=None,
-                 moves=None):
+    def __init__(
+        self,
+        identifier,
+        level,
+        types,
+        hp,
+        maxhp,
+        ability,
+        item,
+        attack,
+        defense,
+        special_attack,
+        special_defense,
+        speed,
+        nature="serious",
+        evs=(85,) * 6,
+        attack_boost=0,
+        defense_boost=0,
+        special_attack_boost=0,
+        special_defense_boost=0,
+        speed_boost=0,
+        accuracy_boost=0,
+        evasion_boost=0,
+        status=None,
+        terastallized=False,
+        volatile_status=None,
+        moves=None
+    ):
         self.id = identifier
         self.level = level
         self.types = types
@@ -245,6 +260,7 @@ class Pokemon(object):
         self.accuracy_boost = accuracy_boost
         self.evasion_boost = evasion_boost
         self.status = status
+        self.terastallized = terastallized
         self.volatile_status = volatile_status or set()
         self.moves = moves or list()
 
@@ -268,6 +284,48 @@ class Pokemon(object):
             burn_multiplier = int(burn_multiplier / 2)
 
         return burn_multiplier
+
+    def get_highest_stat(self):
+        return max({
+           constants.ATTACK: self.attack,
+           constants.DEFENSE: self.defense,
+           constants.SPECIAL_ATTACK: self.special_attack,
+           constants.SPECIAL_DEFENSE: self.special_defense,
+           constants.SPEED: self.speed,
+       }.items(), key=lambda x: x[1])[0]
+
+    def get_boost_from_boost_string(self, boost_string):
+        if boost_string == constants.ATTACK:
+            return self.attack_boost
+        elif boost_string == constants.DEFENSE:
+            return self.defense_boost
+        elif boost_string == constants.SPECIAL_ATTACK:
+            return self.special_attack_boost
+        elif boost_string == constants.SPECIAL_DEFENSE:
+            return self.special_defense_boost
+        elif boost_string == constants.SPEED:
+            return self.speed_boost
+        elif boost_string == constants.ACCURACY:
+            return self.accuracy_boost
+        elif boost_string == constants.EVASION:
+            return self.evasion_boost
+        raise ValueError("{} is not a valid boost".format(boost_string))
+
+    def forced_move(self):
+        if "phantomforce" in self.volatile_status:
+            return "phantomforce"
+        elif "shadowforce" in self.volatile_status:
+            return "shadowforce"
+        elif "dive" in self.volatile_status:
+            return "dive"
+        elif "dig" in self.volatile_status:
+            return "dig"
+        elif "bounce" in self.volatile_status:
+            return "bounce"
+        elif "fly" in self.volatile_status:
+            return "fly"
+        else:
+            return None
 
     def item_can_be_removed(self):
         if (
@@ -311,6 +369,7 @@ class Pokemon(object):
             d[constants.BOOSTS][constants.ACCURACY],
             d[constants.BOOSTS][constants.EVASION],
             d[constants.STATUS],
+            d[constants.TERASTALLIZED],
             d[constants.VOLATILE_STATUS],
             d[constants.MOVES]
         )
@@ -340,6 +399,7 @@ class Pokemon(object):
             d.get(constants.ACCURACY_BOOST, 0),
             d.get(constants.EVASION_BOOST, 0),
             d[constants.STATUS],
+            d[constants.TERASTALLIZED],
             set(d[constants.VOLATILE_STATUS]),
             d[constants.MOVES]
         )
@@ -359,7 +419,8 @@ class Pokemon(object):
         return True
 
     def __repr__(self):
-        return str({
+        return str(
+            {
                 constants.ID: self.id,
                 constants.LEVEL: self.level,
                 constants.TYPES: self.types,
@@ -382,9 +443,11 @@ class Pokemon(object):
                 constants.ACCURACY_BOOST: self.accuracy_boost,
                 constants.EVASION_BOOST: self.evasion_boost,
                 constants.STATUS: self.status,
+                constants.TERASTALLIZED: self.terastallized,
                 constants.VOLATILE_STATUS: list(self.volatile_status),
                 constants.MOVES: self.moves
-            })
+            }
+        )
 
 
 class TransposeInstruction:
@@ -434,6 +497,8 @@ class StateMutator:
             constants.MUTATOR_SIDE_END: self.side_end,
             constants.MUTATOR_WISH_START: self.start_wish,
             constants.MUTATOR_WISH_DECREMENT: self.decrement_wish,
+            constants.MUTATOR_FUTURESIGHT_START: self.start_futuresight,
+            constants.MUTATOR_FUTURESIGHT_DECREMENT: self.decrement_futuresight,
             constants.MUTATOR_DISABLE_MOVE: self.disable_move,
             constants.MUTATOR_ENABLE_MOVE: self.enable_move,
             constants.MUTATOR_WEATHER_START: self.start_weather,
@@ -458,6 +523,8 @@ class StateMutator:
             constants.MUTATOR_SIDE_END: self.reverse_side_end,
             constants.MUTATOR_WISH_START: self.reserve_start_wish,
             constants.MUTATOR_WISH_DECREMENT: self.reverse_decrement_wish,
+            constants.MUTATOR_FUTURESIGHT_START: self.reverse_start_futuresight,
+            constants.MUTATOR_FUTURESIGHT_DECREMENT: self.reverse_decrement_futuresight,
             constants.MUTATOR_DISABLE_MOVE: self.enable_move,
             constants.MUTATOR_ENABLE_MOVE: self.disable_move,
             constants.MUTATOR_WEATHER_START: self.reverse_start_weather,
@@ -576,6 +643,24 @@ class StateMutator:
 
     def reverse_side_end(self, side, effect, amount):
         self.side_start(side, effect, amount)
+
+    def start_futuresight(self, side, pkmn_name, _):
+        # the second parameter is the current futuresight_amount
+        # it is here for reversing purposes
+        side = self.get_side(side)
+        side.future_sight = (3, pkmn_name)
+
+    def reverse_start_futuresight(self, side, _, old_pkmn_name):
+        side = self.get_side(side)
+        side.future_sight = (0, old_pkmn_name)
+
+    def decrement_futuresight(self, side):
+        side = self.get_side(side)
+        side.future_sight = (side.future_sight[0] - 1, side.future_sight[1])
+
+    def reverse_decrement_futuresight(self, side):
+        side = self.get_side(side)
+        side.future_sight = (side.future_sight[0] + 1, side.future_sight[1])
 
     def start_wish(self, side, health, _):
         # the third parameter is the current wish amount

@@ -1,7 +1,7 @@
 from copy import copy
 
-import config
 import constants
+from config import ShowdownConfig
 from data import all_move_json
 
 from . import instruction_generator
@@ -37,7 +37,7 @@ def get_effective_speed(state, side):
         boosted_speed *= 2
     elif state.weather == constants.SAND and side.active.ability == 'sandrush':
         boosted_speed *= 2
-    elif state.weather == constants.HAIL and side.active.ability == 'slushrush':
+    elif state.weather in constants.HAIL_OR_SNOW and side.active.ability == 'slushrush':
         boosted_speed *= 2
 
     if state.field == constants.ELECTRIC_TERRAIN and side.active.ability == 'surgesurfer':
@@ -57,6 +57,9 @@ def get_effective_speed(state, side):
     if constants.PARALYZED == side.active.status and side.active.ability != 'quickfeet':
         boosted_speed *= 0.5
 
+    if any(vs in side.active.volatile_status for vs in ["quarkdrivespe", "protosynthesisspe"]):
+        boosted_speed *= 1.5
+
     return int(boosted_speed)
 
 
@@ -75,7 +78,7 @@ def get_effective_priority(side, move, field):
 
 
 def user_moves_first(state, user_move, opponent_move):
-    user_effective_speed = get_effective_speed(state, state.self)
+    user_effective_speed = get_effective_speed(state, state.user)
     opponent_effective_speed = get_effective_speed(state, state.opponent)
 
     # both users selected a switch
@@ -94,7 +97,7 @@ def user_moves_first(state, user_move, opponent_move):
             return True
         return False
 
-    user_priority = get_effective_priority(state.self, user_move, state.field)
+    user_priority = get_effective_priority(state.user, user_move, state.field)
     opponent_priority = get_effective_priority(state.opponent, opponent_move, state.field)
 
     if user_priority == opponent_priority:
@@ -110,13 +113,14 @@ def user_moves_first(state, user_move, opponent_move):
         return False
 
 
-def update_attacking_move(attacking_pokemon, defending_pokemon, attacking_move, defending_move, first_move, weather, terrain):
+def update_attacking_move(attacking_side, attacking_pokemon, defending_pokemon, attacking_move, defending_move, first_move, weather, terrain):
     # update the attacking move based on certain special-effects:
     #   - abilities
     #   - items
     #   - protect
 
     attacking_move = modify_attack_being_used(
+        attacking_side,
         attacking_move,
         defending_move,
         attacking_pokemon,
@@ -160,6 +164,7 @@ def update_attacking_move(attacking_pokemon, defending_pokemon, attacking_move, 
     if constants.CHARGE in attacking_move[constants.FLAGS] and attacking_move[constants.ID] not in attacking_pokemon.volatile_status:
         attacking_move = attacking_move.copy()
         attacking_move[constants.BASE_POWER] = 0
+        attacking_move[constants.HEAL] = None
         attacking_move[constants.VOLATILE_STATUS] = attacking_move[constants.ID]
         attacking_move[constants.TARGET] = constants.SELF
         attacking_move[constants.CATEGORY] = constants.STATUS
@@ -189,6 +194,14 @@ def update_attacking_move(attacking_pokemon, defending_pokemon, attacking_move, 
                 crash_percent = attacking_move[constants.CRASH][0] / attacking_move[constants.CRASH][1]
                 damage_decimal = -1*(crash_percent + 1/8)
                 attacking_move[constants.HEAL] = damage_decimal.as_integer_ratio()
+        elif constants.SILK_TRAP in defending_pokemon.volatile_status and constants.CONTACT in attacking_move[constants.FLAGS]:
+            attacking_move[constants.ACCURACY] = True
+            attacking_move[constants.CATEGORY] = constants.STATUS
+            attacking_move[constants.BOOSTS] = {constants.SPEED: -1}
+            attacking_move[constants.TARGET] = constants.SELF
+            if constants.CRASH in attacking_move:
+                attacking_move[constants.HEAL_TARGET] = constants.SELF
+                attacking_move[constants.HEAL] = [-1*attacking_move[constants.CRASH][0], attacking_move[constants.CRASH][1]]
 
     return attacking_move
 
@@ -201,7 +214,7 @@ def get_state_instructions_from_move(mutator, attacking_move, defending_move, at
     instructions.frozen = False
 
     if constants.SWITCH_STRING in attacking_move:
-        return instruction_generator.get_instructions_from_switch(mutator, attacker, attacking_move[constants.SWITCH_STRING], instructions)
+        return [instruction_generator.get_instructions_from_switch(mutator, attacker, attacking_move[constants.SWITCH_STRING], instructions)]
 
     # if you are moving second, but you got phased on the first turn, your move will do nothing
     # this can happen if a move with equal priority to a phasing move (generally -6) is used by a slower pokemon and the faster pokemon uses a phasing move
@@ -234,6 +247,7 @@ def get_state_instructions_from_move(mutator, attacking_move, defending_move, at
         return [instructions]
 
     attacking_move = update_attacking_move(
+        attacking_side,
         attacking_pokemon,
         defending_pokemon,
         attacking_move,
@@ -281,7 +295,14 @@ def get_state_instructions_from_move(mutator, attacking_move, defending_move, at
 
     # move is a damaging move
     if attacking_move[constants.CATEGORY] in constants.DAMAGING_CATEGORIES:
-        damage_amounts = _calculate_damage(attacking_pokemon, defending_pokemon, attacking_move, conditions=conditions, calc_type=config.damage_calc_type)
+        side_condition = attacking_move.get(constants.SIDE_CONDITIONS)
+        damage_amounts = _calculate_damage(
+            attacking_pokemon,
+            defending_pokemon,
+            attacking_move,
+            conditions=conditions,
+            calc_type=ShowdownConfig.damage_calc_type
+        )
 
         attacking_move_secondary = attacking_move[constants.SECONDARY]
         attacking_move_self = attacking_move.get(constants.SELF)
@@ -329,7 +350,7 @@ def get_state_instructions_from_move(mutator, attacking_move, defending_move, at
         # boosts from moves that only boost (dragon dance)
         if attacking_move.get(constants.BOOSTS) is not None:
             boosts = attacking_move[constants.BOOSTS]
-            boosts_target = attacker if attacking_move[constants.TARGET] == constants.SELF else defender
+            boosts_target = attacker if attacking_move[constants.TARGET] in constants.MOVE_TARGET_SELF else defender
             boosts_chance = attacking_move[constants.ACCURACY]
 
     mutator.reverse(instructions.instructions)
@@ -348,7 +369,7 @@ def get_state_instructions_from_move(mutator, attacking_move, defending_move, at
             for dmg in damage_amounts:
                 these_instructions = copy(instruction_set)
                 these_instructions.update_percentage(1 / amount_of_damage_rolls)
-                temp_instructions += instruction_generator.get_states_from_damage(mutator, defender, dmg, move_accuracy, attacking_move, these_instructions)
+                temp_instructions += instruction_generator.get_instructions_from_damage(mutator, defender, dmg, move_accuracy, attacking_move, these_instructions)
         all_instructions = temp_instructions
 
     if defending_pokemon.ability in constants.ABILITY_AFTER_MOVE:
@@ -372,19 +393,19 @@ def get_state_instructions_from_move(mutator, attacking_move, defending_move, at
     if volatile_status is not None:
         temp_instructions = []
         for instruction_set in all_instructions:
-            temp_instructions += instruction_generator.get_state_from_volatile_status(mutator, volatile_status, attacker, move_target, first_move, instruction_set)
+            temp_instructions += instruction_generator.get_instructions_from_volatile_statuses(mutator, volatile_status, attacker, move_target, first_move, instruction_set)
         all_instructions = temp_instructions
 
     if move_status_effect is not None:
         temp_instructions = []
         for instruction_set in all_instructions:
-            temp_instructions += instruction_generator.get_states_from_status_effects(mutator, move_status_target, move_status_effect, move_status_accuracy, instruction_set)
+            temp_instructions += instruction_generator.get_instructions_from_status_effects(mutator, move_status_target, move_status_effect, move_status_accuracy, instruction_set)
         all_instructions = temp_instructions
 
     if boosts is not None:
         temp_instructions = []
         for instruction_set in all_instructions:
-            temp_instructions += instruction_generator.get_states_from_boosts(mutator, boosts_target, boosts, boosts_chance, instruction_set)
+            temp_instructions += instruction_generator.get_instructions_from_boosts(mutator, boosts_target, boosts, boosts_chance, instruction_set)
         all_instructions = temp_instructions
 
     if attacking_move[constants.ID] in constants.BOOST_RESET_MOVES:
@@ -396,19 +417,19 @@ def get_state_instructions_from_move(mutator, attacking_move, defending_move, at
     if attacking_move.get(constants.HEAL) is not None:
         temp_instructions = []
         for instruction_set in all_instructions:
-            temp_instructions += instruction_generator.get_state_from_attacker_recovery(mutator, attacker, attacking_move, instruction_set)
+            temp_instructions += instruction_generator.get_instructions_from_attacker_recovery(mutator, attacker, attacking_move, instruction_set)
         all_instructions = temp_instructions
 
     if flinch_accuracy is not None:
         temp_instructions = []
         for instruction_set in all_instructions:
-            temp_instructions += instruction_generator.get_states_from_flinching_moves(defender, flinch_accuracy, first_move, instruction_set)
+            temp_instructions += instruction_generator.get_instructions_from_flinching_moves(defender, flinch_accuracy, first_move, instruction_set)
         all_instructions = temp_instructions
 
-    if constants.DRAG in attacking_move[constants.FLAGS]:
+    if constants.DRAG in attacking_move[constants.FLAGS] and attacking_move[constants.ACCURACY]:
         temp_instructions = []
         for instruction_set in all_instructions:
-            temp_instructions += instruction_generator.get_state_from_drag(mutator, attacker, move_target, instruction_set)
+            temp_instructions += instruction_generator.get_instructions_from_drag(mutator, attacker, move_target, instruction_set)
         all_instructions = temp_instructions
 
     if switch_out_move_triggered(attacking_move, damage_amounts):
@@ -416,7 +437,7 @@ def get_state_instructions_from_move(mutator, attacking_move, defending_move, at
         for i in all_instructions:
             best_switch = get_best_switch_pokemon(mutator, i, attacker, attacking_side, defending_move, first_move)
             if best_switch is not None:
-                temp_instructions += instruction_generator.get_instructions_from_switch(mutator, attacker, best_switch, i)
+                temp_instructions.append(instruction_generator.get_instructions_from_switch(mutator, attacker, best_switch, i))
             else:
                 temp_instructions.append(i)
 
@@ -457,13 +478,13 @@ def get_all_state_instructions(mutator, user_move_string, opponent_move_string):
 
     all_instructions = []
     if bot_moves_first:
-        instructions = get_state_instructions_from_move(mutator, user_move, opponent_move, constants.SELF, constants.OPPONENT, True, instructions)
+        instructions = get_state_instructions_from_move(mutator, user_move, opponent_move, constants.USER, constants.OPPONENT, True, instructions)
         for instruction in instructions:
-            all_instructions += get_state_instructions_from_move(mutator, opponent_move, user_move, constants.OPPONENT, constants.SELF, False, instruction)
+            all_instructions += get_state_instructions_from_move(mutator, opponent_move, user_move, constants.OPPONENT, constants.USER, False, instruction)
     else:
-        instructions = get_state_instructions_from_move(mutator, opponent_move, user_move, constants.OPPONENT, constants.SELF, True, instructions)
+        instructions = get_state_instructions_from_move(mutator, opponent_move, user_move, constants.OPPONENT, constants.USER, True, instructions)
         for instruction in instructions:
-            all_instructions += get_state_instructions_from_move(mutator, user_move, opponent_move, constants.SELF, constants.OPPONENT, False, instruction)
+            all_instructions += get_state_instructions_from_move(mutator, user_move, opponent_move, constants.USER, constants.OPPONENT, False, instruction)
 
     if end_of_turn_triggered(user_move_string, opponent_move_string):
         temp_instructions = []

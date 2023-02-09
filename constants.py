@@ -2,7 +2,6 @@ CHALLENGE_USER = "CHALLENGE_USER"
 ACCEPT_CHALLENGE = "ACCEPT_CHALLENGE"
 SEARCH_LADDER = "SEARCH_LADDER"
 BOT_MODES = [CHALLENGE_USER, ACCEPT_CHALLENGE, SEARCH_LADDER]
-DEFAULT_MODE = "gen7randombattle"
 
 STANDARD_BATTLE = "standard_battle"
 RANDOM_BATTLE = "random_battle"
@@ -55,6 +54,8 @@ MUTATOR_SIDE_START = "side_start"
 MUTATOR_SIDE_END = "side_end"
 MUTATOR_WISH_START = "wish_start"
 MUTATOR_WISH_DECREMENT = "wish_decrement"
+MUTATOR_FUTURESIGHT_START = "futuresight_start"
+MUTATOR_FUTURESIGHT_DECREMENT = "futuresight_decrement"
 MUTATOR_DISABLE_MOVE = "disable_move"
 MUTATOR_ENABLE_MOVE = "enable_move"
 MUTATOR_WEATHER_START = "weather_start"
@@ -72,6 +73,7 @@ HEAL = "heal"
 HEAL_TARGET = "heal_target"
 
 FORCE_SWITCH = 'forceSwitch'
+REVIVING = 'reviving'
 WAIT = 'wait'
 TRAPPED = "trapped"
 MAYBE_TRAPPED = "maybeTrapped"
@@ -83,6 +85,7 @@ PP = "pp"
 CURRENT_PP = 'current_pp'
 
 SELF = "self"
+USER = "user"
 NORMAL = 'normal'
 OPPONENT = "opponent"
 ALLY_SIDE = "allySide"
@@ -101,7 +104,6 @@ MOVE_TARGET_OPPONENT = [NORMAL, OPPONENT, ALL_ADJACENT, ALL_ADJACENT_FOES, ALL, 
 
 DO_NOTHING_MOVE = 'splash'
 
-MOVES = "moves"
 ID = "id"
 BASESTATS = "baseStats"
 LEVEL = "level"
@@ -110,9 +112,10 @@ STATUS = "status"
 TYPES = "types"
 TYPE = "type"
 BASE_POWER = "basePower"
-WEIGHT = "weight"
+WEIGHT = "weightkg"
 NATURE = "nature"
 EVS = "evs"
+TERASTALLIZED = "terastallized"
 
 SIDE = "side"
 POKEMON = "pokemon"
@@ -120,9 +123,11 @@ FNT = "fnt"
 
 SWITCH_STRING = "switch"
 WIN_STRING = "|win|"
+TIE_STRING = "|tie"
 CHAT_STRING = "|c|"
 TIME_LEFT = "Time left:"
 DETAILS = "details"
+IDENT = "ident"
 
 MEGA_EVOLVE_GENERATIONS = [
     "gen6",
@@ -131,6 +136,7 @@ MEGA_EVOLVE_GENERATIONS = [
 CAN_MEGA_EVO = "canMegaEvo"
 CAN_ULTRA_BURST = "canUltraBurst"
 CAN_DYNAMAX = "canDynamax"
+CAN_TERASTALLIZE = "canTerastallize"
 CAN_Z_MOVE = "canZMove"
 ZMOVE = "zmove"
 ULTRA_BURST = "ultra"
@@ -168,7 +174,6 @@ EVASION_BOOST = "evasion_boost"
 
 ABILITY = 'ability'
 REQUEST_DICT_ABILITY = ABILITY
-MOST_LIKELY_ABILITY = 'most_likely_ability'
 
 MAX_BOOSTS = 6
 
@@ -180,6 +185,16 @@ STAT_ABBREVIATION_LOOKUPS = {
     "spe": SPEED,
     "accuracy": ACCURACY,
     "evasion": EVASION
+}
+
+STAT_ABBREVIATION_REVERSE_LOOKUPS = {
+    ATTACK: "atk",
+    DEFENSE: "def",
+    SPECIAL_ATTACK: "spa",
+    SPECIAL_DEFENSE: "spd",
+    SPEED: "spe",
+    ACCURACY: "accuracy",
+    EVASION: "evasion"
 }
 
 STAT_STRINGS = [ATTACK, DEFENSE, SPECIAL_ATTACK, SPECIAL_DEFENSE, SPEED]
@@ -219,6 +234,7 @@ SAFEGUARD = 'safeguard'
 TAILWIND = 'tailwind'
 STICKY_WEB = 'stickyweb'
 WISH = "wish"
+FUTURE_SIGHT = "futuresight"
 HEALING_WISH = 'healingwish'
 
 # weather
@@ -226,10 +242,13 @@ RAIN = "raindance"
 SUN = "sunnyday"
 SAND = "sandstorm"
 HAIL = "hail"
+SNOW = "snow"
+ICE_WEATHER = "snow"
 DESOLATE_LAND = "desolateland"
 HEAVY_RAIN = "primordialsea"
 
 IRREVERSIBLE_WEATHER = {DESOLATE_LAND, HEAVY_RAIN}
+HAIL_OR_SNOW = {HAIL, SNOW}
 
 POKEMON_CANNOT_HAVE_ITEMS_REMOVED = {
     'kyogreprimal',
@@ -289,9 +308,9 @@ COURT_CHANGE_SWAPS = {
     'tailwind'
 }
 
-HAZARD_CLEARING_MOVES = ['rapidspin', 'defog', 'courtchange']
+HAZARD_CLEARING_MOVES = ['rapidspin', 'defog', 'courtchange', 'mortalspin', 'tidyup']
 
-RAPID_SPIN_CLEARS = [
+SPIN_TIDYUP_CLEARS = [
     STEALTH_ROCK,
     SPIKES,
     TOXIC_SPIKES,
@@ -317,7 +336,7 @@ MISTY_TERRAIN = "mistyterrain"
 PSYCHIC_TERRAIN = "psychicterrain"
 
 # switch-out moves
-SWITCH_OUT_MOVES = {"uturn", "voltswitch", "partingshot", "teleport", 'flipturn'}
+SWITCH_OUT_MOVES = {"uturn", "voltswitch", "partingshot", "teleport", 'flipturn', 'chillyreception'}
 
 # volatile statuses
 FLINCH = "flinch"
@@ -328,12 +347,14 @@ TAUNT = "taunt"
 ROOST = "roost"
 PROTECT = "protect"
 BANEFUL_BUNKER = "banefulbunker"
+SILK_TRAP = "silktrap"
 SPIKY_SHIELD = "spikyshield"
 DYNAMAX = "dynamax"
+TERASTALLIZE = "terastallize"
 PARTIALLY_TRAPPED = "partiallytrapped"
 TRANSFORM = 'transform'
 
-PROTECT_VOLATILE_STATUSES = [PROTECT, BANEFUL_BUNKER, SPIKY_SHIELD]
+PROTECT_VOLATILE_STATUSES = [PROTECT, BANEFUL_BUNKER, SPIKY_SHIELD, SILK_TRAP]
 
 # non-volatile statuses
 SLEEP = "slp"
@@ -357,6 +378,10 @@ IMMUNE_TO_STAT_LOWERING_ABILITIES = {
     'clearbody',
     'whitesmoke',
     'fullmetalbody'
+}
+
+IMMUNE_TO_STAT_LOWERING_ITEMS = {
+    "clearamulet"
 }
 
 IMMUNE_TO_SLEEP_ABILITIES = {'insomnia', 'sweetveil', 'vitalspirit'}

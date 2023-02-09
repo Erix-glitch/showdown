@@ -9,17 +9,65 @@ from data import pokedex
 from showdown.battle import Pokemon
 from showdown.battle import LastUsedMove
 from showdown.battle import DamageDealt
+from showdown.battle import StatRange
 from showdown.engine.helpers import normalize_name
 from showdown.engine.helpers import get_pokemon_info_from_condition
 from showdown.engine.helpers import calculate_stats
 from showdown.engine.find_state_instructions import get_effective_speed
 from showdown.engine.damage_calculator import calculate_damage
+from showdown.engine.objects import boost_multiplier_lookup
 
 
 logger = logging.getLogger(__name__)
 
 
 MOVE_END_STRINGS = {'move', 'switch', 'upkeep', ''}
+
+
+def can_have_priority_modified(battle, pokemon, move_name):
+    return (
+        "prankster" in [normalize_name(a) for a in pokedex[pokemon.name][constants.ABILITIES].values()] or
+        move_name == "grassyglide" and battle.field == constants.GRASSY_TERRAIN
+    )
+
+
+def can_have_speed_modified(battle, pokemon):
+    return (
+        (
+            pokemon.item is None and
+            "unburden" in [normalize_name(a) for a in pokedex[pokemon.name][constants.ABILITIES].values()]
+        ) or
+        (
+            battle.weather == constants.RAIN and
+            pokemon.ability is None and
+            "swiftswim" in [normalize_name(a) for a in pokedex[pokemon.name][constants.ABILITIES].values()]
+        ) or
+        (
+            battle.weather == constants.SUN and
+            pokemon.ability is None and
+            "chlorophyll" in [normalize_name(a) for a in pokedex[pokemon.name][constants.ABILITIES].values()]
+        ) or
+        (
+            battle.weather == constants.SAND and
+            pokemon.ability is None and
+            "sandrush" in [normalize_name(a) for a in pokedex[pokemon.name][constants.ABILITIES].values()]
+        ) or
+        (
+            battle.weather in constants.HAIL_OR_SNOW and
+            pokemon.ability is None and
+            "slushrush" in [normalize_name(a) for a in pokedex[pokemon.name][constants.ABILITIES].values()]
+        ) or
+        (
+            battle.field == constants.ELECTRIC_TERRAIN and
+            pokemon.ability is None and
+            "surgesurfer" in [normalize_name(a) for a in pokedex[pokemon.name][constants.ABILITIES].values()]
+        ) or
+        (
+            pokemon.status == constants.PARALYZED and
+            pokemon.ability is None and
+            "quickfeet" in [normalize_name(a) for a in pokedex[pokemon.name][constants.ABILITIES].values()]
+        )
+    )
 
 
 def find_pokemon_in_reserves(pkmn_name, reserves):
@@ -29,8 +77,25 @@ def find_pokemon_in_reserves(pkmn_name, reserves):
     return None
 
 
+def find_reserve_pokemon_by_nickname(pkmn_nickname, reserves):
+    for reserve_pkmn in reserves:
+        if pkmn_nickname == reserve_pkmn.nickname:
+            return reserve_pkmn
+    return None
+
+
 def is_opponent(battle,  split_msg):
     return not split_msg[2].startswith(battle.user.name)
+
+
+def get_move_information(m):
+    # Given a |move| line from the PS protocol, extract the user of the move and the move object
+    try:
+        split_move_line = m.split("|")
+        return split_move_line[2], all_move_json[normalize_name(split_move_line[3])]
+    except KeyError:
+        logger.debug("Unknown move {} - using standard 0 priority move".format(normalize_name(m.split('|')[3])))
+        return m.split('|')[2], {constants.ID: "unknown", constants.PRIORITY: 0}
 
 
 def request(battle, split_msg):
@@ -83,7 +148,8 @@ def switch_or_drag(battle, split_msg):
 
     if side.active is not None:
         # set the pkmn's types back to their original value if the types were changed
-        if constants.TYPECHANGE in side.active.volatile_statuses:
+        # if the pkmn is terastallized, this does not happen
+        if constants.TYPECHANGE in side.active.volatile_statuses and not side.active.terastallized:
             original_types = pokedex[side.active.name][constants.TYPES]
             logger.debug("{} had it's type changed - changing its types back to {}".format(side.active.name, original_types))
             side.active.types = original_types
@@ -105,14 +171,26 @@ def switch_or_drag(battle, split_msg):
         # reset toxic count for this side
         side.side_conditions[constants.TOXIC_COUNT] = 0
 
+        # if the side is alive and has regenerator, give it back 1/3 of it's maxhp
+        if side.active.hp > 0 and not side.active.fainted and side.active.ability == "regenerator":
+            health_healed = int(side.active.max_hp / 3)
+            side.active.hp = min(side.active.hp + health_healed, side.active.max_hp)
+            logger.debug(
+                "{} switched out with regenerator. Healing it to {}/{}".format(
+                    side.active.name, side.active.hp, side.active.max_hp
+                )
+            )
+
     # check if the pokemon exists in the reserves
     # if it does not, then the newly-created pokemon is used (for formats without team preview)
-    pkmn = Pokemon.from_switch_string(split_msg[3])
-    pkmn = find_pokemon_in_reserves(pkmn.name, side.reserve)
+    nickname = split_msg[2]
+    temp_pkmn = Pokemon.from_switch_string(split_msg[3], nickname=nickname)
+    pkmn = find_pokemon_in_reserves(temp_pkmn.name, side.reserve)
 
     if pkmn is None:
-        pkmn = Pokemon.from_switch_string(split_msg[3])
+        pkmn = Pokemon.from_switch_string(split_msg[3], nickname=nickname)
     else:
+        pkmn.nickname = temp_pkmn.nickname
         side.reserve.remove(pkmn)
 
     side.last_used_move = LastUsedMove(
@@ -127,7 +205,7 @@ def switch_or_drag(battle, split_msg):
 
     side.active = pkmn
     if side.active.name in constants.UNKOWN_POKEMON_FORMES:
-        side.active = Pokemon.from_switch_string(split_msg[3])
+        side.active = Pokemon.from_switch_string(split_msg[3], nickname=nickname)
 
 
 def heal_or_damage(battle, split_msg):
@@ -135,6 +213,9 @@ def heal_or_damage(battle, split_msg):
         side = battle.opponent
         other_side = battle.user
         pkmn = battle.opponent.active
+        if len(split_msg) == 5 and split_msg[4] == "[from] move: Revival Blessing":
+            nickname = Pokemon.extract_nickname_from_pokemonshowdown_string(split_msg[2])
+            pkmn = find_reserve_pokemon_by_nickname(nickname, side.reserve)
 
         # opponent hp is given as a percentage
         if constants.FNT in split_msg[3]:
@@ -147,6 +228,9 @@ def heal_or_damage(battle, split_msg):
         side = battle.user
         other_side = battle.opponent
         pkmn = battle.user.active
+        if len(split_msg) == 5 and split_msg[4] == "[from] move: Revival Blessing":
+            nickname = Pokemon.extract_nickname_from_pokemonshowdown_string(split_msg[2])
+            pkmn = find_reserve_pokemon_by_nickname(nickname, side.reserve)
         if constants.FNT in split_msg[3]:
             pkmn.hp = 0
         else:
@@ -191,7 +275,7 @@ def faint(battle, split_msg):
 
 
 def move(battle, split_msg):
-    if '[from]' in split_msg[-1]:
+    if '[from]' in split_msg[-1] and split_msg[-1] != "[from]lockedmove":
         return
 
     move_name = normalize_name(split_msg[3].strip().lower())
@@ -202,6 +286,12 @@ def move(battle, split_msg):
     else:
         side = battle.user
         pkmn = battle.user.active
+
+    # remove volatile status if they have it
+    # this is for preparation moves like Phantom Force
+    if move_name in pkmn.volatile_statuses:
+        logger.debug("Removing volatile status {} from {}".format(move_name, pkmn.name))
+        pkmn.volatile_statuses.remove(move_name)
 
     # add the move to it's moves if it hasn't been seen
     # decrement the PP by one
@@ -321,14 +411,56 @@ def activate(battle, split_msg):
         logger.debug("{} has the item {}".format(pkmn.name, item))
         pkmn.item = item
 
+    if split_msg[3].lower().startswith("ability: "):
+        ability = normalize_name(split_msg[3].split(':')[-1].strip())
+        logger.debug("Setting {}'s ability to {}".format(pkmn.name, ability))
+        pkmn.ability = ability
+    elif split_msg[3].lower().startswith("item: "):
+        item = normalize_name(split_msg[3].split(':')[-1].strip())
+        logger.debug("Setting {}'s item to {}".format(pkmn.name, item))
+        pkmn.item = item
 
-def start_volatile_status(battle, split_msg):
+
+def prepare(battle, split_msg):
     if is_opponent(battle, split_msg):
         pkmn = battle.opponent.active
     else:
         pkmn = battle.user.active
 
+    being_prepared = normalize_name(split_msg[3])
+    if being_prepared in pkmn.volatile_statuses:
+        logger.warning("{} already has the volatile status {}".format(pkmn.name, being_prepared))
+    else:
+        pkmn.volatile_statuses.append(being_prepared)
+
+
+def terastallize(battle, split_msg):
+    if is_opponent(battle, split_msg):
+        pkmn = battle.opponent.active
+    else:
+        pkmn = battle.user.active
+
+    pkmn.terastallized = True
+    pkmn.types = [normalize_name(split_msg[3])]
+    logger.debug("Terastallized {}".format(pkmn.name))
+
+
+def start_volatile_status(battle, split_msg):
+    if is_opponent(battle, split_msg):
+        pkmn = battle.opponent.active
+        side = battle.opponent
+    else:
+        pkmn = battle.user.active
+        side = battle.user
+
     volatile_status = normalize_name(split_msg[3].split(":")[-1])
+
+    # for some reason futuresight is sent with the `-start` message
+    # `-start` is typically reserved for volatile statuses
+    if volatile_status == "futuresight":
+        side.future_sight = (3, pkmn.name)
+        return
+
     if volatile_status not in pkmn.volatile_statuses:
         logger.debug("Starting the volatile status {} on {}".format(volatile_status, pkmn.name))
         pkmn.volatile_statuses.append(volatile_status)
@@ -345,9 +477,14 @@ def start_volatile_status(battle, split_msg):
         pkmn.ability = normalize_name(split_msg[5].split('ability:')[-1])
 
     if volatile_status == constants.TYPECHANGE:
-        new_type = normalize_name(split_msg[4])
-        logger.debug("Setting {}'s type to {}".format(pkmn.name, new_type))
-        pkmn.types = [new_type]
+        if split_msg[4] == "[from] move: Reflect Type":
+            pkmn_name = normalize_name(split_msg[5].split(":")[-1])
+            new_types = deepcopy(pokedex[pkmn_name][constants.TYPES])
+        else:
+            new_types = [normalize_name(t) for t in split_msg[4].split("/")]
+
+        logger.debug("Setting {}'s types to {}".format(pkmn.name, new_types))
+        pkmn.types = new_types
 
 
 def end_volatile_status(battle, split_msg):
@@ -468,6 +605,13 @@ def sideend(battle, split_msg):
     else:
         logger.debug("Side condition {} ending for bot".format(condition))
         battle.user.side_conditions[condition] = 0
+
+
+def swapsideconditions(battle, _):
+    user_sc = battle.user.side_conditions
+    opponent_sc = battle.opponent.side_conditions
+    for side_condition in constants.COURT_CHANGE_SWAPS:
+        user_sc[side_condition], opponent_sc[side_condition] = opponent_sc[side_condition], user_sc[side_condition]
 
 
 def set_item(battle, split_msg):
@@ -611,6 +755,14 @@ def upkeep(battle, _):
         battle.opponent.wish = (battle.opponent.wish[0] - 1, battle.opponent.wish[1])
         logger.debug("Decrementing wish to {} for the opponent".format(battle.opponent.wish[0]))
 
+    if battle.user.future_sight[0] > 0:
+        battle.user.future_sight = (battle.user.future_sight[0] - 1, battle.user.future_sight[1])
+        logger.debug("Decrementing future_sight to {} for the bot".format(battle.user.future_sight[0]))
+
+    if battle.opponent.future_sight[0] > 0:
+        battle.opponent.future_sight = (battle.opponent.future_sight[0] - 1, battle.opponent.future_sight[1])
+        logger.debug("Decrementing future_sight to {} for the opponent".format(battle.opponent.future_sight[0]))
+
 
 def mega(battle, split_msg):
     if is_opponent(battle, split_msg):
@@ -656,23 +808,112 @@ def noinit(battle, split_msg):
         logger.debug("Renamed battle to {}".format(battle.battle_tag))
 
 
-def check_choicescarf(battle, msg_lines):
-    def get_move_information(m):
-        try:
-            return m.split('|')[2], all_move_json[normalize_name(m.split('|')[3])]
-        except KeyError:
-            logger.debug("Unknown move {} - using standard 0 priority move".format(normalize_name(m.split('|')[3])))
-            return m.split('|')[2], {constants.PRIORITY: 0}
+def check_speed_ranges(battle, msg_lines):
+    """
+    Intention:
+        This function is intended to set the min or max possible speed that the opponent's
+        active Pokemon could possibly have given a turn that just happened.
+
+        For example: if both the bot and the opponent use an equal priority move but the
+        opponent moves first, then the opponent's min_speed attribute will be set to the
+        bots actual speed. This is because the opponent must have at least that much speed
+        for it to have gone first.
+
+        These min/max speeds are set without knowledge of items. If the opponent goes first
+        when having a choice scarf then min speed will still be set to the bots speed. When
+        it comes time to guess a Pokemon's possible set(s), the item must be taken into account
+        as well when determining the final speed of a Pokemon. Abilities are NOT taken into
+        consideration because their speed modifications are subject to certain conditions
+        being present, whereas a choice scarf ALWAYS boosts speed.
+
+        If there is a situation where an ability could have modified the turn order (either by
+        changing a move's priority or giving a Pokemon more speed) then this check should be
+        skipped. Examples are:
+            - either side switched
+            - the opponent COULD have a speed-boosting weather ability AND that weather is up
+            - the opponent COULD have prankster and it used a status move
+            - Grassy Glide is used when Grassy Terrain is up
+    """
+    # If either side switched this turn - don't do this check
+    if any(ln.startswith("|switch|") for ln in msg_lines):
+        return
+
+    moves = [get_move_information(m) for m in msg_lines if m.startswith('|move|')]
+    if len(moves) != 2 or moves[0][1][constants.PRIORITY] != moves[1][1][constants.PRIORITY]:
+        return
+
+    bot_went_first = moves[0][0].startswith(battle.user.name)
 
     if (
         battle.opponent.active is None or
-        battle.opponent.active.item != constants.UNKNOWN_ITEM or
-        'prankster' in [normalize_name(a) for a in pokedex[battle.opponent.active.name][constants.ABILITIES].values()]
+        battle.opponent.active.item == "choicescarf" or
+        can_have_speed_modified(battle, battle.opponent.active) or
+        (not bot_went_first and can_have_priority_modified(battle, battle.opponent.active, moves[0][1][constants.ID])) or
+        (bot_went_first and can_have_priority_modified(battle, battle.user.active, moves[0][1][constants.ID]))
     ):
+        return
+
+    battle_copy = deepcopy(battle)
+    battle_copy.user.from_json(battle_copy.request_json)
+
+    speed_threshold = int(
+        boost_multiplier_lookup[battle_copy.user.active.boosts[constants.SPEED]] *
+        battle_copy.user.active.stats[constants.SPEED] /
+        boost_multiplier_lookup[battle_copy.opponent.active.boosts[constants.SPEED]]
+    )
+
+    if battle.opponent.side_conditions[constants.TAILWIND]:
+        speed_threshold = int(speed_threshold / 2)
+
+    if battle.user.side_conditions[constants.TAILWIND]:
+        speed_threshold = int(speed_threshold * 2)
+
+    if battle.opponent.active.status == constants.PARALYZED:
+        speed_threshold = int(speed_threshold * 2)
+
+    if battle.user.active.status == constants.PARALYZED:
+        speed_threshold = int(speed_threshold / 2)
+
+    if battle.user.active.item == "choicescarf":
+        speed_threshold = int(speed_threshold * 1.5)
+
+    # we want to swap which attribute gets updated in trickroom because the slower pokemon goes first
+    if battle.trick_room:
+        bot_went_first = not bot_went_first
+
+    if bot_went_first:
+        opponent_max_speed = min(battle.opponent.active.speed_range.max, speed_threshold)
+        battle.opponent.active.speed_range = StatRange(
+            min=battle.opponent.active.speed_range.min,
+            max=opponent_max_speed
+        )
+        logger.info("Updated {}'s max speed to {}".format(battle.opponent.active.name, battle.opponent.active.speed_range.max))
+
+    else:
+        opponent_min_speed = max(battle.opponent.active.speed_range.min, speed_threshold)
+        battle.opponent.active.speed_range = StatRange(
+            min=opponent_min_speed,
+            max=battle.opponent.active.speed_range.max
+        )
+        logger.info(
+            "Updated {}'s min speed to {}".format(battle.opponent.active.name, battle.opponent.active.speed_range.min))
+
+
+def check_choicescarf(battle, msg_lines):
+    # If either side switched this turn - don't do this check
+    if any(ln.startswith("|switch|") for ln in msg_lines):
         return
 
     moves = [get_move_information(m) for m in msg_lines if m.startswith('|move|')]
     if len(moves) != 2 or moves[0][0].startswith(battle.user.name) or moves[0][1][constants.PRIORITY] != moves[1][1][constants.PRIORITY]:
+        return
+
+    if (
+        battle.opponent.active is None or
+        battle.opponent.active.item != constants.UNKNOWN_ITEM or
+        can_have_speed_modified(battle, battle.opponent.active) or
+        can_have_priority_modified(battle, battle.opponent.active, moves[0][1][constants.ID])
+    ):
         return
 
     battle_copy = deepcopy(battle)
@@ -686,7 +927,7 @@ def check_choicescarf(battle, msg_lines):
             battle_copy.opponent.active.set_spread('jolly', '0,0,0,0,0,252')  # assume as fast as possible
     state = battle_copy.create_state()
     opponent_effective_speed = get_effective_speed(state, state.opponent)
-    bot_effective_speed = get_effective_speed(state, state.self)
+    bot_effective_speed = get_effective_speed(state, state.user)
 
     if battle.trick_room:
         has_scarf = opponent_effective_speed > bot_effective_speed
@@ -935,6 +1176,7 @@ def update_battle(battle, msg):
     msg_lines = msg.split('\n')
 
     action = None
+    check_speed_ranges(battle, msg_lines)
     for i, line in enumerate(msg_lines):
         split_msg = line.split('|')
         if len(split_msg) < 2:
@@ -954,6 +1196,7 @@ def update_battle(battle, msg):
             '-unboost': unboost,
             '-status': status,
             '-activate': activate,
+            '-prepare': prepare,
             '-start': start_volatile_status,
             '-end': end_volatile_status,
             '-curestatus': curestatus,
@@ -963,6 +1206,7 @@ def update_battle(battle, msg):
             '-fieldend': fieldend,
             '-sidestart': sidestart,
             '-sideend': sideend,
+            '-swapsideconditions': swapsideconditions,
             '-item': set_item,
             '-enditem': remove_item,
             '-immune': set_ability,
@@ -972,6 +1216,7 @@ def update_battle(battle, msg):
             '-formechange': form_change,
             '-transform': transform,
             '-mega': mega,
+            '-terastallize': terastallize,
             '-zpower': zpower,
             '-clearnegativeboost': clearnegativeboost,
             '-clearallboost': clearallboost,

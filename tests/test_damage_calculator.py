@@ -273,6 +273,70 @@ class TestCalculateDamageAmount(unittest.TestCase):
         dmg = _calculate_damage(self.charizard, self.venusaur, move, calc_type='max')
         self.assertEqual([597], dmg)
 
+    def test_move_versus_partially_typeless_pokemon(self):
+        self.venusaur.types = ["typeless", "grass"]
+        move = 'fireblast'
+
+        dmg = _calculate_damage(self.charizard, self.venusaur, move, calc_type='max')
+        self.assertEqual([300], dmg)
+
+    def test_move_versus_partially_typeless_pokemon_with_question_mark_type(self):
+        self.venusaur.types = ["???", "grass"]
+        move = 'fireblast'
+
+        dmg = _calculate_damage(self.charizard, self.venusaur, move, calc_type='max')
+        self.assertEqual([300], dmg)
+
+    def test_move_versus_completely_typeless_pokemon(self):
+        self.venusaur.types = ["typeless"]
+        move = 'fireblast'
+
+        dmg = _calculate_damage(self.charizard, self.venusaur, move, calc_type='max')
+        self.assertEqual([150], dmg)
+
+    def test_move_versus_completely_typeless_pokemon_with_question_mark_type(self):
+        self.venusaur.types = ["???"]
+        move = 'fireblast'
+
+        dmg = _calculate_damage(self.charizard, self.venusaur, move, calc_type='max')
+        self.assertEqual([150], dmg)
+
+    def test_terastallized_pokemon_gets_2x_stab_when_terratype_in_original_types(self):
+        self.charizard.types = ["fire"]
+        self.charizard.terastallized = True
+        move = 'fireblast'
+
+        # typical max damage is 300 with normal STAB
+        dmg = _calculate_damage(self.charizard, self.venusaur, move, calc_type='max')
+        self.assertEqual([400], dmg)
+
+    def test_terastallized_pokemon_gets_normal_stab_when_terratype_not_in_original_types(self):
+        self.charizard.types = ["water"]
+        self.charizard.terastallized = True
+        move = 'watergun'
+
+        # watergun would do 18 damage from charizard -> venusaur normally, and 27 with STAB
+        dmg = _calculate_damage(self.charizard, self.venusaur, move, calc_type='max')
+        self.assertEqual([27], dmg)
+
+    def test_terastallized_pokemon_gets_normal_stab_with_original_types(self):
+        self.charizard.types = ["water"]
+        self.charizard.terastallized = True
+        move = 'fireblast'
+
+        # 1.5x STAB should give 300 damage from charizard -> venusaur
+        dmg = _calculate_damage(self.charizard, self.venusaur, move, calc_type='max')
+        self.assertEqual([300], dmg)
+
+    def test_terastallized_pokemon_does_not_get_stab_on_nonterra_type(self):
+        self.charizard.types = ["fire"]
+        self.charizard.terastallized = True
+        move = 'watergun'
+
+        # non-stab watergun should do 18 dmg
+        dmg = _calculate_damage(self.charizard, self.venusaur, move, calc_type='max')
+        self.assertEqual([18], dmg)
+
 
 class TestCalculateDamage(unittest.TestCase):
     def setUp(self):
@@ -280,15 +344,15 @@ class TestCalculateDamage(unittest.TestCase):
         self.venusaur = Pokemon.from_state_pokemon_dict(StatePokemon("venusaur", 100).to_dict())
 
         self.state = State(
-            Side(self.blastoise, dict(), (0, 0), defaultdict(lambda: 0)),
-            Side(self.venusaur, dict(), (0, 0), defaultdict(lambda: 0)),
+            Side(self.blastoise, dict(), (0, 0), defaultdict(lambda: 0), (0, 0)),
+            Side(self.venusaur, dict(), (0, 0), defaultdict(lambda: 0), (0, 0)),
             None,
             None,
             None
         )
 
     def test_earthquake_into_levitate_does_zero_damage(self):
-        self.state.self.active.ability = 'levitate'
+        self.state.user.active.ability = 'levitate'
 
         damage_amounts = calculate_damage(
             self.state,
@@ -299,8 +363,22 @@ class TestCalculateDamage(unittest.TestCase):
 
         self.assertEqual(0, damage_amounts[0])
 
+    def test_bots_reflect_does_not_reduce_its_own_damage(self):
+        self.state.opponent.side_conditions[constants.REFLECT] = 1
+
+        damage_amounts = calculate_damage(
+            self.state,
+            constants.OPPONENT,
+            'earthquake',
+            'splash'
+        )
+
+        # should do normal damage of 68
+        # the attacker (opponent) having reflect up shouldn't change anything
+        self.assertEqual(68, damage_amounts[0])
+
     def test_moldbreaker_ignores_levitate(self):
-        self.state.self.active.ability = 'levitate'
+        self.state.user.active.ability = 'levitate'
         self.state.opponent.active.ability = 'moldbreaker'
 
         damage_amounts = calculate_damage(

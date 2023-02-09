@@ -722,6 +722,42 @@ class TestBattlerActiveLockedIntoMove(unittest.TestCase):
 
         self.assertTrue(self.battler.active.get_move('firstimpression').disabled)
 
+    def test_taunt_locks_status_move(self):
+        self.battler.active.moves.append(Move('calmmind'))
+        self.battler.active.volatile_statuses.append("taunt")
+
+        self.battler.lock_moves()
+
+        self.assertTrue(self.battler.active.get_move('calmmind').disabled)
+
+    def test_taunt_does_not_lock_physical_move(self):
+        self.battler.active.moves.append(Move('tackle'))
+        self.battler.active.volatile_statuses.append("taunt")
+
+        self.battler.lock_moves()
+
+        self.assertFalse(self.battler.active.get_move('tackle').disabled)
+
+    def test_taunt_does_not_lock_special_move(self):
+        self.battler.active.moves.append(Move('watergun'))
+        self.battler.active.volatile_statuses.append("taunt")
+
+        self.battler.lock_moves()
+
+        self.assertFalse(self.battler.active.get_move('watergun').disabled)
+
+    def test_taunt_with_multiple_moves(self):
+        self.battler.active.moves.append(Move('watergun'))
+        self.battler.active.moves.append(Move('tackle'))
+        self.battler.active.moves.append(Move('calmmind'))
+        self.battler.active.volatile_statuses.append("taunt")
+
+        self.battler.lock_moves()
+
+        self.assertFalse(self.battler.active.get_move('watergun').disabled)
+        self.assertFalse(self.battler.active.get_move('tackle').disabled)
+        self.assertTrue(self.battler.active.get_move('calmmind').disabled)
+
     def test_calmmind_gets_locked_when_user_has_assaultvest(self):
         self.battler.active.moves.append(Move('calmmind'))
         self.battler.active.item = 'assaultvest'
@@ -821,6 +857,40 @@ class TestBattle(unittest.TestCase):
 
         self.assertEqual(expected_options, self.battle.get_all_options())
 
+    def test_phantomforce_volatilestatus_makes_the_move_forced_for_user(self):
+        self.battle.user.active.moves = [
+            Move('thunderbolt'),
+            Move('tackle'),
+            Move('charm'),
+            Move('phantomforce'),
+        ]
+        self.battle.opponent.active.moves = [
+            Move('thunderbolt')
+        ]
+
+        self.battle.user.active.volatile_statuses = ["phantomforce"]
+
+        expected_options = ['phantomforce'], ['thunderbolt']
+
+        self.assertEqual(expected_options, self.battle.get_all_options())
+
+    def test_phantomforce_volatilestatus_makes_the_move_forced_for_opponent(self):
+        self.battle.user.active.moves = [
+            Move('thunderbolt'),
+        ]
+        self.battle.opponent.active.moves = [
+            Move('thunderbolt'),
+            Move('tackle'),
+            Move('charm'),
+            Move('phantomforce'),
+        ]
+
+        self.battle.opponent.active.volatile_statuses = ["phantomforce"]
+
+        expected_options = ['thunderbolt'], ['phantomforce']
+
+        self.assertEqual(expected_options, self.battle.get_all_options())
+
     def test_gets_multiple_moves_for_both_sides(self):
         self.battle.user.active.moves = [
             Move('thunderbolt'),
@@ -866,6 +936,55 @@ class TestBattle(unittest.TestCase):
             [
                 'splash',
                 'switch caterpie'
+            ]
+        )
+
+        self.assertEqual(expected_options, self.battle.get_all_options())
+
+    def test_reviving_pokemon_must_choose_fainted_pokemon_to_switch(self):
+        self.battle.force_switch = True
+        self.battle.user.active.moves = []
+        self.battle.opponent.active.moves = []
+
+        self.battle.user.active.reviving = True
+        user_fainted_caterpie = Pokemon('caterpie', 100)
+        user_fainted_caterpie.hp = 0
+        user_fainted_caterpie.fainted = True
+        self.battle.user.reserve = [user_fainted_caterpie]
+        self.battle.opponent.reserve = []
+
+        expected_options = (
+            [
+                'switch caterpie'
+            ],
+            [
+                'splash',
+            ]
+        )
+
+        self.assertEqual(expected_options, self.battle.get_all_options())
+
+    def test_reviving_pokemon_only_chooses_fainted_pokemon_to_switch(self):
+        self.battle.force_switch = True
+        self.battle.user.active.moves = []
+        self.battle.opponent.active.moves = []
+
+        self.battle.user.active.reviving = True
+        user_fainted_caterpie = Pokemon('caterpie', 100)
+        user_fainted_caterpie.hp = 0
+        user_fainted_caterpie.fainted = True
+        user_alive_metapod = Pokemon('metapod', 100)
+        user_alive_metapod.hp = 100
+        user_alive_metapod.fainted = False
+        self.battle.user.reserve = [user_fainted_caterpie, user_alive_metapod]
+        self.battle.opponent.reserve = []
+
+        expected_options = (
+            [
+                'switch caterpie'
+            ],
+            [
+                'splash',
             ]
         )
 

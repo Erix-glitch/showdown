@@ -94,7 +94,8 @@ side = Side(
         'spikes': 3,
         'toxic_spikes': 2,
         'tailwind': 1
-    }
+    },
+    future_sight=(0, 0)
 )
 ```
 
@@ -105,7 +106,7 @@ This object represents the entire battle.
 from showdown.engine import State
 from showdown.engine import Side
 state = State(
-    self=Side(...),
+    user=Side(...),
     opponent=Side(...),
     weather='sunnyday',
     field='electricterrain',
@@ -126,20 +127,20 @@ from showdown.engine import StateMutator
 
 state = State(...)  # initialize your state
 
-state.self.active.hp = 100
-print(state.self.active.hp)  # prints '100'
+state.user.active.hp = 100
+print(state.user.active.hp)  # prints '100'
 
 mutator = StateMutator(state)
 
 instructions = [
-    ('damage', 'self', 1)
+    ('damage', 'user', 1)
 ]
 
 mutator.apply(instructions)
-print(state.self.active.hp)  # prints '99'
+print(state.user.active.hp)  # prints '99'
 
 mutator.reverse(instructions)
-print(state.self.active.hp)  # prints '100'
+print(state.user.active.hp)  # prints '100'
 ```
 
 ### Generating Instructions from a Pair of Moves
@@ -179,7 +180,7 @@ Example: tackle being used by both combatants
 >> 1.0  # 100% chance of happening
 
 >> print(first_instruction.instructions)  
->> [('damage', 'self', 15), ('damage', 'opponent', 15)]
+>> [('damage', 'user', 15), ('damage', 'opponent', 15)]
 ```
 
 Example: thunderbolt being used by both combatants
@@ -207,7 +208,7 @@ Example: thunderbolt being used by both combatants
 >> print(first_instruction.percentage)
 >> 0.0075000000000000015
 >> print(first_instruction.instructions)  
->> [('damage', 'opponent', 45), ('apply_status', 'opponent', 'par'), ('damage', 'self', 45), ('apply_status', 'self', 'par')]
+>> [('damage', 'opponent', 45), ('apply_status', 'opponent', 'par'), ('damage', 'user', 45), ('apply_status', 'user', 'par')]
 
 # Looking at another instruction
 # this one is when the first thunderbolt paralyzes, and the other pokemon is fully-paralyzed and does not move
@@ -223,24 +224,3 @@ Notice that damage calculations are constant per move. This is done for simplici
 This behaviour can be changed by setting a global configuration value.
 
 Obviously, if this is done then the number of instructions generated will become very large even for simple pairs of moves
-
-Looking at 'tackle' vs 'tackle' again:
-```python
->> import config
->> config.damage_calc_type = 'all'  # other acceptable values are 'min_max', 'min_max_average', and 'average'
-
->> from showdown.engine import State
->> from showdown.engine import StateMutator
->> from showdown.engine import get_all_state_instructions
-
->> state = State(...)  # initialize your state
-
->> mutator = StateMutator(state)
->> my_move = 'tackle'
->> your_move = 'tackle'
-
->> transpose_instructions = get_all_state_instructions(mutator, my_move, your_move)
-
->> len(transpose_instructions)
->> 80  # in this contrived example there are 8 possible damage rolls for one tackle, and 10 for the other
-```

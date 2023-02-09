@@ -73,7 +73,7 @@ def find_all_equilibria(matrix):
     string = format_string_for_options(num_rows, num_cols)
     string = append_items_to_string(matrix, string).encode()
 
-    cmd = [config.gambit_exe_path, '-q', '-d', '2']
+    cmd = ["gambit-enummixed", '-q', '-d', '2']
 
     # sometimes this call fails and stdout is empty - repeating until completion seems to have fixed the issue
     stdout = ''
@@ -99,7 +99,7 @@ def find_all_equilibria(matrix):
             ne = convert_from_list(ne, num_rows)
             equilibria.append(ne)
 
-    return np.array(equilibria)
+    return np.array(equilibria, dtype=object)
 
 
 def find_nash_equilibrium(score_lookup):
@@ -154,7 +154,7 @@ def pick_move_in_equilibrium_from_multiple_score_lookups(score_lookups):
         weighted_choices = get_weighted_choices_from_multiple_score_lookups(score_lookups)
     except CouldNotFindEquilibriumError as e:
         logger.warning("Problem finding equilibria: {}".format(e))
-        return random.choice([pick_safest(sl)[0][0] for sl in score_lookups])
+        return random.choice([pick_safest(sl, remove_guaranteed=True)[0][0] for sl in score_lookups])
 
     s = sum([wc[1] for wc in weighted_choices])
     bot_choices = [wc[0] for wc in weighted_choices]

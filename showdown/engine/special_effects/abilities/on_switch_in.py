@@ -12,10 +12,10 @@ def sandstream(state, attacking_side, attacking_pokemon, defending_side, defendi
 
 
 def snowwarning(state, attacking_side, attacking_pokemon, defending_side, defending_pokemon):
-    if state.weather not in constants.IRREVERSIBLE_WEATHER and state.weather != constants.HAIL:
+    if state.weather not in constants.IRREVERSIBLE_WEATHER and state.weather != constants.ICE_WEATHER:
         return [(
             constants.MUTATOR_WEATHER_START,
-            constants.HAIL,
+            constants.ICE_WEATHER,
             state.weather
         )]
     return None
@@ -96,9 +96,11 @@ def mistysurge(state, attacking_side, attacking_pokemon, defending_side, defendi
 def intimidate(state, attacking_side, attacking_pokemon, defending_side, defending_pokemon):
     if defending_pokemon.ability in ['fullmetalbody', 'clearbody', 'hypercutter', 'whitesmoke', 'innerfocus', 'oblivious', 'owntempo', 'scrappy']:
         return None
+    if defending_pokemon.item in constants.IMMUNE_TO_STAT_LOWERING_ITEMS:
+        return None
 
     # I shouldn't be doing this here but w/e sue me
-    if defending_pokemon.ability == 'defiant':
+    if defending_pokemon.ability == 'defiant' or defending_pokemon.ability == "guarddog":
         return [(
             constants.MUTATOR_BOOST,
             defending_side,
@@ -165,9 +167,9 @@ def intrepidsword(state, attacking_side, attacking_pokemon, defending_side, defe
 def screencleaner(state, attacking_side, attacking_pokemon, defending_side, defending_pokemon):
     instructions = list()
     for side_condition in [constants.REFLECT, constants.LIGHT_SCREEN, constants.AURORA_VEIL]:
-        if state.self.side_conditions[side_condition]:
+        if state.user.side_conditions[side_condition]:
             instructions.append(
-                (constants.MUTATOR_SIDE_END, constants.SELF, side_condition, state.self.side_conditions[side_condition]),
+                (constants.MUTATOR_SIDE_END, constants.USER, side_condition, state.user.side_conditions[side_condition]),
             )
         if state.opponent.side_conditions[side_condition]:
             instructions.append(

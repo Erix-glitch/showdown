@@ -3,6 +3,7 @@ from copy import deepcopy
 
 import constants
 from data import all_move_json
+from data import pokedex
 
 
 pokemon_type_indicies = {
@@ -24,7 +25,10 @@ pokemon_type_indicies = {
     'dark': 15,
     'steel': 16,
     'fairy': 17,
-    'typeless': 18
+
+    # ??? and typeless are the same thing
+    'typeless': 18,
+    '???': 18,
 }
 
 damage_multipication_array = [[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1/2, 0, 1, 1, 1/2, 1, 1],
@@ -53,6 +57,7 @@ SPECIAL_LOGIC_MOVES = {
     "nightshade": lambda attacker, defender: [int(attacker.level)] if "normal" not in defender.types else None,
     "superfang": lambda attacker, defender: [int(defender.hp / 2)] if "ghost" not in defender.types else None,
     "naturesmadness": lambda attacker, defender: [int(defender.hp / 2)],
+    "ruination": lambda attacker, defender: [int(defender.hp / 2)],
     "finalgambit": lambda attacker, defender: [int(attacker.hp)] if "ghost" not in defender.types else None,
     "endeavor": lambda attacker, defender: [int(defender.hp - attacker.hp)] if defender.hp > attacker.hp and "ghost" not in defender.types else None,
     "painsplit": lambda attacker, defender: [defender.hp - (attacker.hp + defender.hp)/2],
@@ -121,11 +126,23 @@ def _calculate_damage(attacker, defender, move, conditions=None, calc_type='aver
             pass
 
     # rock types get 1.5x SPDEF in sand
+    # ice types get 1.5x DEF in snow
     try:
         if conditions[constants.WEATHER] == constants.SAND and 'rock' in defender.types:
             defending_stats[constants.SPECIAL_DEFENSE] = int(defending_stats[constants.SPECIAL_DEFENSE] * 1.5)
+        elif conditions[constants.WEATHER] == constants.SNOW and 'ice' in defender.types:
+            defending_stats[constants.DEFENSE] = int(defending_stats[constants.DEFENSE] * 1.5)
     except KeyError:
         pass
+
+    if defender.ability == "tabletsofruin":
+        attacking_stats[constants.ATTACK] *= 0.75
+    elif defender.ability == "vesselofruin":
+        attacking_stats[constants.SPECIAL_ATTACK] *= 0.75
+    if attacker.ability == "swordofruin":
+        defending_stats[constants.DEFENSE] *= 0.75
+    elif attacker.ability == "beadsofruin":
+        defending_stats[constants.SPECIAL_DEFENSE] *= 0.75
 
     damage = int(int((2 * attacker.level) / 5) + 2) * attacking_move[constants.BASE_POWER]
     damage = int(damage * attacking_stats[attack] / defending_stats[defense])
@@ -249,8 +266,20 @@ def weather_modifier(attacking_move, weather):
 
 def stab_modifier(attacking_pokemon, attacking_move):
     if attacking_move[constants.TYPE] in [t for t in attacking_pokemon.types]:
+        if (
+            attacking_pokemon.terastallized and
+            attacking_pokemon.types[0] in pokedex[attacking_pokemon.id][constants.TYPES]
+        ):
+            return 2
+        else:
+            return 1.5
+
+    elif (
+        attacking_pokemon.terastallized and
+        attacking_move[constants.TYPE] in pokedex[attacking_pokemon.id][constants.TYPES]
+    ):
         return 1.5
-    
+
     return 1
 
 
@@ -302,6 +331,50 @@ def volatile_status_modifier(attacking_move, attacker, defender):
         modifier *= 1.5
     if 'tarshot' in defender.volatile_status and attacking_move[constants.TYPE] == 'fire':
         modifier *= 2
+    if 'phantomforce' in defender.volatile_status:
+        modifier *= 0
+    if 'shadowforce' in defender.volatile_status:
+        modifier *= 0
+    if (
+        'dive' in defender.volatile_status and
+        attacker.ability != "noguard" and
+        defender.ability != "noguard" and
+        attacking_move[constants.ID] not in [
+            "surf", "whirlpool"
+        ]
+    ):
+        modifier *= 0
+    if (
+        'dig' in defender.volatile_status and
+        attacker.ability != "noguard" and
+        defender.ability != "noguard" and
+        attacking_move[constants.ID] not in [
+            "earthquake", "magnitude", "fissure"
+        ]
+    ):
+        modifier *= 0
+    if (
+        (
+            "fly" in defender.volatile_status or
+            "bounce" in defender.volatile_status
+        ) and
+        attacker.ability != "noguard" and
+        defender.ability != "noguard" and
+        attacking_move[constants.ID] not in [
+            "gust", "thunder", "twister", "skyuppercut", "hurricane", "thousandarrows", "smackdown"
+        ]
+    ):
+        modifier *= 0
+    if 'glaiverush' in defender.volatile_status:
+        modifier *= 2
+    if any(vs in attacker.volatile_status for vs in ['quarkdriveatk', "protosynthesisatk"]) and attacking_move[constants.CATEGORY] == constants.PHYSICAL:
+        modifier *= 1.3
+    if any(vs in attacker.volatile_status for vs in ['quarkdrivespa', "protosynthesisspa"]) and attacking_move[constants.CATEGORY] == constants.SPECIAL:
+        modifier *= 1.3
+    if any(vs in defender.volatile_status for vs in ['quarkdrivedef', "protosynthesisdef"]) and attacking_move[constants.CATEGORY] == constants.PHYSICAL:
+        modifier *= (1/1.3)
+    if any(vs in defender.volatile_status for vs in ['quarkdrivespd', "protosynthesisspd"]) and attacking_move[constants.CATEGORY] == constants.SPECIAL:
+        modifier *= (1/1.3)
     return modifier
 
 
@@ -316,29 +389,32 @@ def calculate_damage(state, attacking_side_string, attacking_move, defending_mov
     else:
         defending_move_dict = get_move(defending_move)
 
-    if attacking_side_string == constants.SELF:
-        attacking_side = state.self
+    if attacking_side_string == constants.USER:
+        attacking_side = state.user
         defending_side = state.opponent
     elif attacking_side_string == constants.OPPONENT:
         attacking_side = state.opponent
-        defending_side = state.self
+        defending_side = state.user
     else:
         raise ValueError("attacking_side_string must be one of: ['self', 'opponent']")
 
     conditions = {
-        constants.REFLECT: state.opponent.side_conditions[constants.REFLECT],
-        constants.LIGHT_SCREEN: state.opponent.side_conditions[constants.LIGHT_SCREEN],
-        constants.AURORA_VEIL: state.opponent.side_conditions[constants.AURORA_VEIL],
+        constants.REFLECT: defending_side.side_conditions[constants.REFLECT],
+        constants.LIGHT_SCREEN: defending_side.side_conditions[constants.LIGHT_SCREEN],
+        constants.AURORA_VEIL: defending_side.side_conditions[constants.AURORA_VEIL],
         constants.WEATHER: state.weather,
         constants.TERRAIN: state.field
     }
 
     attacker_moves_first = user_moves_first(state, attacking_move_dict, defending_move_dict)
 
-    # a charge move doesn't need to charge when only calculating damage
-    attacking_move_dict[constants.FLAGS].pop(constants.CHARGE, None)
+    if constants.CHARGE in attacking_move_dict[constants.FLAGS]:
+        attacking_move_dict = attacking_move_dict.copy()
+        # a charge move doesn't need to charge when only calculating damage
+        attacking_move_dict[constants.FLAGS].pop(constants.CHARGE, None)
 
     attacking_move_dict = update_attacking_move(
+        attacking_side,
         attacking_side.active,
         defending_side.active,
         attacking_move_dict,
@@ -349,3 +425,49 @@ def calculate_damage(state, attacking_side_string, attacking_move, defending_mov
     )
 
     return _calculate_damage(attacking_side.active, defending_side.active, attacking_move_dict, conditions=conditions, calc_type=calc_type)
+
+
+def calculate_futuresight_damage(state, attacking_side_string, future_sight_user, calc_type='average'):
+    if attacking_side_string == constants.USER:
+        attacking_side = state.user
+        defending_side = state.opponent
+    else:
+        attacking_side = state.opponent
+        defending_side = state.user
+
+    if attacking_side.active.id == future_sight_user:
+        attacker = attacking_side.active
+    else:
+        attacker = attacking_side.reserve[future_sight_user]
+
+    defender = defending_side.active
+
+    attacking_move_dict = {
+        "accuracy": 100,
+        "basePower": 120,
+        "category": "special",
+        "flags": {},
+        "id": "futuresight",
+        "name": "Future Sight",
+        "priority": 0,
+        "secondary": False,
+        "target": "normal",
+        "type": "psychic",
+        "pp": 10
+    }
+
+    conditions = {
+        constants.REFLECT: defending_side.side_conditions[constants.REFLECT],
+        constants.LIGHT_SCREEN: defending_side.side_conditions[constants.LIGHT_SCREEN],
+        constants.AURORA_VEIL: defending_side.side_conditions[constants.AURORA_VEIL],
+        constants.WEATHER: state.weather,
+        constants.TERRAIN: state.field
+    }
+
+    return _calculate_damage(
+        attacker,
+        defender,
+        attacking_move_dict,
+        conditions=conditions,
+        calc_type=calc_type
+    )
